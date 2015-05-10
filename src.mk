@@ -247,6 +247,7 @@ JNI_NATIVE_SOURCES =                                          \
   java/rocksjni/table.cc                                      \
   java/rocksjni/transaction_log.cc                            \
   java/rocksjni/ttl.cc                                        \
+  java/rocksjni/weez.cc                                       \
   java/rocksjni/write_batch.cc                                \
   java/rocksjni/writebatchhandlerjnicallback.cc               \
   java/rocksjni/write_batch_test.cc                           \

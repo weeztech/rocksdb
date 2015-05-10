@@ -37,6 +37,7 @@ NATIVE_JAVA_CLASSES = org.rocksdb.AbstractComparator\
 	org.rocksdb.VectorMemTableConfig\
 	org.rocksdb.Snapshot\
 	org.rocksdb.StringAppendOperator\
+	org.rocksdb.Weez\
 	org.rocksdb.WriteBatch\
 	org.rocksdb.WriteBatch.Handler\
 	org.rocksdb.WriteOptions\
