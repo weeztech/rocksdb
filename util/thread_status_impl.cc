@@ -18,21 +18,33 @@ const std::string& ThreadStatus::GetThreadTypeName(
     ThreadStatus::ThreadType thread_type) {
   static std::string thread_type_names[NUM_THREAD_TYPES + 1] = {
       "High Pri", "Low Pri", "User", "Unknown"};
+  if (thread_type < 0 || thread_type >= NUM_THREAD_TYPES) {
+    return thread_type_names[NUM_THREAD_TYPES];  // "Unknown"
+  }
   return thread_type_names[thread_type];
 }
 
 const std::string& ThreadStatus::GetOperationName(
     ThreadStatus::OperationType op_type) {
+  if (op_type < 0 || op_type >= NUM_OP_TYPES) {
+    return global_operation_table[OP_UNKNOWN].name;
+  }
   return global_operation_table[op_type].name;
 }
 
 const std::string& ThreadStatus::GetOperationStageName(
     ThreadStatus::OperationStage stage) {
+  if (stage < 0 || stage >= NUM_OP_STAGES) {
+    return global_op_stage_table[STAGE_UNKNOWN].name;
+  }
   return global_op_stage_table[stage].name;
 }
 
 const std::string& ThreadStatus::GetStateName(
     ThreadStatus::StateType state_type) {
+  if (state_type < 0 || state_type >= NUM_STATE_TYPES) {
+    return global_state_table[STATE_UNKNOWN].name;
+  }
   return global_state_table[state_type].name;
 }
 
@@ -67,7 +79,8 @@ const std::string& ThreadStatus::GetOperationPropertyName(
 
 std::map<std::string, uint64_t>
     ThreadStatus::InterpretOperationProperties(
-    ThreadStatus::OperationType op_type, uint64_t* op_properties) {
+    ThreadStatus::OperationType op_type,
+    const uint64_t* op_properties) {
   int num_properties;
   switch (op_type) {
     case OP_COMPACTION:
@@ -84,21 +97,21 @@ std::map<std::string, uint64_t>
   for (int i = 0; i < num_properties; ++i) {
     if (op_type == OP_COMPACTION &&
         i == COMPACTION_INPUT_OUTPUT_LEVEL) {
-      property_map.emplace(
-          "BaseInputLevel", op_properties[i] >> 32);
-      property_map.emplace(
-          "OutputLevel", op_properties[i] % (1LU << 32));
+      property_map.insert(
+          {"BaseInputLevel", op_properties[i] >> 32});
+      property_map.insert(
+          {"OutputLevel", op_properties[i] % (1LU << 32)});
     } else if (op_type == OP_COMPACTION &&
                i == COMPACTION_PROP_FLAGS) {
-      property_map.emplace(
-          "IsManual", ((op_properties[i] & 2) >> 1));
-      property_map.emplace(
-          "IsDeletion", ((op_properties[i] & 4) >> 2));
-      property_map.emplace(
-          "IsTrivialMove", ((op_properties[i] & 8) >> 3));
+      property_map.insert(
+          {"IsManual", ((op_properties[i] & 2) >> 1)});
+      property_map.insert(
+          {"IsDeletion", ((op_properties[i] & 4) >> 2)});
+      property_map.insert(
+          {"IsTrivialMove", ((op_properties[i] & 8) >> 3)});
     } else {
-      property_map.emplace(
-          GetOperationPropertyName(op_type, i), op_properties[i]);
+      property_map.insert(
+          {GetOperationPropertyName(op_type, i), op_properties[i]});
     }
   }
   return property_map;
@@ -145,7 +158,8 @@ const std::string& ThreadStatus::GetOperationPropertyName(
 
 std::map<std::string, uint64_t>
     ThreadStatus::InterpretOperationProperties(
-    ThreadStatus::OperationType op_type, uint64_t* op_properties) {
+    ThreadStatus::OperationType op_type,
+    const uint64_t* op_properties) {
   return std::map<std::string, uint64_t>();
 }
 

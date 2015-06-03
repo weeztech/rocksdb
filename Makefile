@@ -177,12 +177,16 @@ CXXFLAGS += $(WARNING_FLAGS) -I. -I./include $(PLATFORM_CXXFLAGS) $(OPT) -Woverl
 LDFLAGS += $(PLATFORM_LDFLAGS)
 
 date := $(shell date +%F)
-git_sha := $(shell git describe HEAD 2>/dev/null)
+ifdef FORCE_GIT_SHA
+	git_sha := $(FORCE_GIT_SHA)
+else
+	git_sha := $(shell git rev-parse HEAD 2>/dev/null)
+endif
 gen_build_version =							\
   printf '%s\n'								\
     '\#include "build_version.h"'					\
     'const char* rocksdb_build_git_sha =				\
-      "rocksdb_build_git_sha:$(git_sha)";'				\
+      "rocksdb_build_git_sha:$(git_sha)";'			\
     'const char* rocksdb_build_git_date =				\
       "rocksdb_build_git_date:$(date)";'				\
     'const char* rocksdb_build_compile_date = __DATE__;'

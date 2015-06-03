@@ -200,7 +200,14 @@ class SpecialEnv : public EnvWrapper {
           return base_->Append(data);
         }
       }
-      Status Close() override { return base_->Close(); }
+      Status Close() override {
+        // Check preallocation size
+        // preallocation size is never passed to base file.
+        size_t preallocation_size = preallocation_block_size();
+        TEST_SYNC_POINT_CALLBACK("DBTestWritableFile.GetPreallocationStatus",
+                                 &preallocation_size);
+        return base_->Close();
+      }
       Status Flush() override { return base_->Flush(); }
       Status Sync() override {
         ++env_->sync_counter_;
@@ -4067,6 +4074,16 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrigger) {
   DestroyAndReopen(options);
   CreateAndReopenWithCF({"pikachu"}, options);
 
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "DBTestWritableFile.GetPreallocationStatus", [&](void* arg) {
+        ASSERT_TRUE(arg != nullptr);
+        size_t preallocation_size = *(static_cast<size_t*>(arg));
+        if (num_levels_ > 3) {
+          ASSERT_LE(preallocation_size, options.target_file_size_base * 1.1);
+        }
+      });
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+
   Random rnd(301);
   int key_idx = 0;
 
@@ -4175,6 +4192,8 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrigger) {
   dbfull()->TEST_WaitForCompact();
   // All files at level 0 will be compacted into a single one.
   ASSERT_EQ(NumSortedRuns(1), 1);
+
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
 }
 
 TEST_P(DBTestUniversalCompaction, UniversalCompactionSizeAmplification) {
@@ -8753,6 +8772,9 @@ class ModelDB: public DB {
     return options_;
   }
 
+  using DB::GetDBOptions;
+  virtual const DBOptions& GetDBOptions() const override { return options_; }
+
   using DB::Flush;
   virtual Status Flush(const rocksdb::FlushOptions& options,
                        ColumnFamilyHandle* column_family) override {
@@ -11073,7 +11095,9 @@ TEST_F(DBTest, DynamicLevelMaxBytesBase2) {
   dbfull()->TEST_WaitForCompact();
   ASSERT_TRUE(db_->GetIntProperty("rocksdb.base-level", &int_prop));
   ASSERT_EQ(3U, int_prop);
-  ASSERT_TRUE(db_->GetProperty("rocksdb.num-files-at-level3", &str_prop));
+  ASSERT_TRUE(db_->GetProperty("rocksdb.num-files-at-level1", &str_prop));
+  ASSERT_EQ("0", str_prop);
+  ASSERT_TRUE(db_->GetProperty("rocksdb.num-files-at-level2", &str_prop));
   ASSERT_EQ("0", str_prop);
 
   // Trigger parallel compaction, and the first one would change the base
@@ -11149,6 +11173,88 @@ TEST_F(DBTest, DynamicLevelMaxBytesBase2) {
 
   ASSERT_TRUE(db_->GetIntProperty("rocksdb.base-level", &int_prop));
   ASSERT_EQ(1U, int_prop);
+}
+
+// Test specific cases in dynamic max bytes
+TEST_F(DBTest, DynamicLevelMaxBytesCompactRange) {
+  Random rnd(301);
+  int kMaxKey = 1000000;
+
+  Options options = CurrentOptions();
+  options.create_if_missing = true;
+  options.db_write_buffer_size = 2048;
+  options.write_buffer_size = 2048;
+  options.max_write_buffer_number = 2;
+  options.level0_file_num_compaction_trigger = 2;
+  options.level0_slowdown_writes_trigger = 9999;
+  options.level0_stop_writes_trigger = 9999;
+  options.target_file_size_base = 2;
+  options.level_compaction_dynamic_level_bytes = true;
+  options.max_bytes_for_level_base = 10240;
+  options.max_bytes_for_level_multiplier = 4;
+  options.max_background_compactions = 1;
+  const int kNumLevels = 5;
+  options.num_levels = kNumLevels;
+  options.expanded_compaction_factor = 0;  // Force not expanding in compactions
+  BlockBasedTableOptions table_options;
+  table_options.block_size = 1024;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+  DestroyAndReopen(options);
+
+  // Compact against empty DB
+  dbfull()->CompactRange(nullptr, nullptr);
+
+  uint64_t int_prop;
+  std::string str_prop;
+
+  // Initial base level is the last level
+  ASSERT_TRUE(db_->GetIntProperty("rocksdb.base-level", &int_prop));
+  ASSERT_EQ(4U, int_prop);
+
+  // Put about 7K to L0
+  for (int i = 0; i < 140; i++) {
+    ASSERT_OK(Put(Key(static_cast<int>(rnd.Uniform(kMaxKey))),
+                  RandomString(&rnd, 80)));
+  }
+  Flush();
+  dbfull()->TEST_WaitForCompact();
+  if (NumTableFilesAtLevel(0) == 0) {
+    // Make sure level 0 is not empty
+    ASSERT_OK(Put(Key(static_cast<int>(rnd.Uniform(kMaxKey))),
+                  RandomString(&rnd, 80)));
+    Flush();
+  }
+
+  ASSERT_TRUE(db_->GetIntProperty("rocksdb.base-level", &int_prop));
+  ASSERT_EQ(3U, int_prop);
+  ASSERT_TRUE(db_->GetProperty("rocksdb.num-files-at-level1", &str_prop));
+  ASSERT_EQ("0", str_prop);
+  ASSERT_TRUE(db_->GetProperty("rocksdb.num-files-at-level2", &str_prop));
+  ASSERT_EQ("0", str_prop);
+
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  std::set<int> output_levels;
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "CompactionPicker::CompactRange:Return", [&](void* arg) {
+        Compaction* compaction = reinterpret_cast<Compaction*>(arg);
+        output_levels.insert(compaction->output_level());
+      });
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+
+  dbfull()->CompactRange(nullptr, nullptr);
+  ASSERT_EQ(output_levels.size(), 2);
+  ASSERT_TRUE(output_levels.find(3) != output_levels.end());
+  ASSERT_TRUE(output_levels.find(4) != output_levels.end());
+  ASSERT_TRUE(db_->GetProperty("rocksdb.num-files-at-level0", &str_prop));
+  ASSERT_EQ("0", str_prop);
+  ASSERT_TRUE(db_->GetProperty("rocksdb.num-files-at-level3", &str_prop));
+  ASSERT_EQ("0", str_prop);
+  // Base level is still level 3.
+  ASSERT_TRUE(db_->GetIntProperty("rocksdb.base-level", &int_prop));
+  ASSERT_EQ(3U, int_prop);
 }
 
 TEST_F(DBTest, DynamicLevelMaxBytesBaseInc) {
@@ -12561,7 +12667,7 @@ TEST_F(DBTest, SuggestCompactRangeTest) {
   class CompactionFilterFactoryGetContext : public CompactionFilterFactory {
    public:
     virtual std::unique_ptr<CompactionFilter> CreateCompactionFilter(
-        const CompactionFilter::Context& context) {
+        const CompactionFilter::Context& context) override {
       saved_context = context;
       std::unique_ptr<CompactionFilter> empty_filter;
       return empty_filter;
@@ -12773,6 +12879,70 @@ TEST_F(DBTest, LargeBatchWithColumnFamilies) {
   }
   // make sure we can re-open it.
   ASSERT_OK(TryReopenWithColumnFamilies({"default", "pikachu"}, options));
+}
+
+// Make sure that Flushes can proceed in parallel with CompactRange()
+TEST_F(DBTest, FlushesInParallelWithCompactRange) {
+  // iter == 0 -- leveled
+  // iter == 1 -- leveled, but throw in a flush between two levels compacting
+  // iter == 2 -- universal
+  for (int iter = 0; iter < 3; ++iter) {
+    printf("iter %d\n", iter);
+    Options options = CurrentOptions();
+    if (iter < 2) {
+      options.compaction_style = kCompactionStyleLevel;
+    } else {
+      options.compaction_style = kCompactionStyleUniversal;
+    }
+    options.write_buffer_size = 110 << 10;
+    options.level0_file_num_compaction_trigger = 4;
+    options.num_levels = 4;
+    options.compression = kNoCompression;
+    options.max_bytes_for_level_base = 450 << 10;
+    options.target_file_size_base = 98 << 10;
+    options.max_write_buffer_number = 2;
+
+    DestroyAndReopen(options);
+
+    Random rnd(301);
+    for (int num = 0; num < 14; num++) {
+      GenerateNewRandomFile(&rnd);
+    }
+
+    if (iter == 1) {
+    rocksdb::SyncPoint::GetInstance()->LoadDependency(
+        {{"DBImpl::RunManualCompaction()::1",
+          "DBTest::FlushesInParallelWithCompactRange:1"},
+         {"DBTest::FlushesInParallelWithCompactRange:2",
+          "DBImpl::RunManualCompaction()::2"}});
+    } else {
+      rocksdb::SyncPoint::GetInstance()->LoadDependency(
+          {{"CompactionJob::Run():Start",
+            "DBTest::FlushesInParallelWithCompactRange:1"},
+           {"DBTest::FlushesInParallelWithCompactRange:2",
+            "CompactionJob::Run():End"}});
+    }
+    rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+
+    std::vector<std::thread> threads;
+    threads.emplace_back([&]() { Compact("a", "z"); });
+
+    TEST_SYNC_POINT("DBTest::FlushesInParallelWithCompactRange:1");
+
+    // this has to start a flush. if flushes are blocked, this will try to
+    // create
+    // 3 memtables, and that will fail because max_write_buffer_number is 2
+    for (int num = 0; num < 3; num++) {
+      GenerateNewRandomFile(&rnd, /* nowait */ true);
+    }
+
+    TEST_SYNC_POINT("DBTest::FlushesInParallelWithCompactRange:2");
+
+    for (auto& t : threads) {
+      t.join();
+    }
+    rocksdb::SyncPoint::GetInstance()->DisableProcessing();
+  }
 }
 
 }  // namespace rocksdb

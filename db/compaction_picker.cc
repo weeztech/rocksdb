@@ -16,9 +16,12 @@
 #include <inttypes.h>
 #include <limits>
 #include <string>
+#include <utility>
+
 #include "db/column_family.h"
 #include "db/filename.h"
 #include "util/log_buffer.h"
+#include "util/random.h"
 #include "util/statistics.h"
 #include "util/string_util.h"
 #include "util/sync_point.h"
@@ -465,6 +468,11 @@ Compaction* CompactionPicker::CompactRange(
   }
 
   CompactionInputFiles output_level_inputs;
+  if (output_level == ColumnFamilyData::kCompactToBaseLevel) {
+    assert(input_level == 0);
+    output_level = vstorage->base_level();
+    assert(output_level > 0);
+  }
   output_level_inputs.level = output_level;
   if (input_level != output_level) {
     int parent_index = -1;
@@ -484,13 +492,16 @@ Compaction* CompactionPicker::CompactRange(
 
   std::vector<FileMetaData*> grandparents;
   GetGrandparents(vstorage, inputs, output_level_inputs, &grandparents);
-  return new Compaction(
+  Compaction* compaction = new Compaction(
       vstorage, mutable_cf_options, std::move(compaction_inputs), output_level,
       mutable_cf_options.MaxFileSizeForLevel(output_level),
       mutable_cf_options.MaxGrandParentOverlapBytes(input_level),
       output_path_id,
       GetCompressionType(ioptions_, output_level, vstorage->base_level()),
       std::move(grandparents), /* is manual compaction */ true);
+
+  TEST_SYNC_POINT_CALLBACK("CompactionPicker::CompactRange:Return", compaction);
+  return compaction;
 }
 
 #ifndef ROCKSDB_LITE
@@ -744,8 +755,8 @@ void LevelCompactionPicker::PickFilesMarkedForCompactionExperimental(
     return;
   }
 
-  for (auto& level_file : vstorage->FilesMarkedForCompaction()) {
-    // If it's being compaction it has nothing to do here.
+  auto continuation = [&](std::pair<int, FileMetaData*> level_file) {
+    // If it's being compacted it has nothing to do here.
     // If this assert() fails that means that some function marked some
     // files as being_compacted, but didn't call ComputeCompactionScore()
     assert(!level_file.second->being_compacted);
@@ -754,7 +765,21 @@ void LevelCompactionPicker::PickFilesMarkedForCompactionExperimental(
 
     inputs->files = {level_file.second};
     inputs->level = *level;
-    if (ExpandWhileOverlapping(cf_name, vstorage, inputs)) {
+    return ExpandWhileOverlapping(cf_name, vstorage, inputs);
+  };
+
+  // take a chance on a random file first
+  Random64 rnd(/* seed */ reinterpret_cast<uint64_t>(vstorage));
+  size_t random_file_index = static_cast<size_t>(rnd.Uniform(
+      static_cast<uint64_t>(vstorage->FilesMarkedForCompaction().size())));
+
+  if (continuation(vstorage->FilesMarkedForCompaction()[random_file_index])) {
+    // found the compaction!
+    return;
+  }
+
+  for (auto& level_file : vstorage->FilesMarkedForCompaction()) {
+    if (continuation(level_file)) {
       // found the compaction!
       return;
     }
@@ -796,6 +821,7 @@ Compaction* LevelCompactionPicker::PickCompaction(
   // compaction
   if (inputs.empty()) {
     is_manual = true;
+    parent_index = base_index = -1;
     PickFilesMarkedForCompactionExperimental(cf_name, vstorage, &inputs, &level,
                                              &output_level);
   }

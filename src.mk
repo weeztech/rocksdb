@@ -14,6 +14,7 @@ LIB_SOURCES =                                                   \
   db/db_impl_experimental.cc                                    \
   db/db_iter.cc                                                 \
   db/experimental.cc                                            \
+  db/event_logger_helpers.cc                                    \
   db/file_indexer.cc                                            \
   db/filename.cc                                                \
   db/flush_job.cc                                               \
@@ -110,6 +111,7 @@ LIB_SOURCES =                                                   \
   utilities/spatialdb/spatial_db.cc                             \
   utilities/ttl/db_ttl_impl.cc                                  \
   utilities/write_batch_with_index/write_batch_with_index.cc    \
+  utilities/write_batch_with_index/write_batch_with_index_internal.cc    \
   util/event_logger.cc                                          \
   util/ldb_cmd.cc                                               \
   util/ldb_tool.cc                                              \

@@ -29,6 +29,10 @@
 
 namespace rocksdb {
 
+// TODO(yhchiang): remove this function once c++14 is available
+//                 as std::max will be able to cover this.
+constexpr int constexpr_max(int a, int b) { return a > b ? a : b; }
+
 // A structure that describes the current status of a thread.
 // The status of active threads can be fetched using
 // rocksdb::GetThreadList().
@@ -67,10 +71,6 @@ struct ThreadStatus {
     NUM_OP_STAGES
   };
 
-  // The maximum number of properties of an operation.
-  // This number should be set to the biggest NUM_XXX_PROPERTIES.
-  static const int kNumOperationProperties = 6;
-
   enum CompactionPropertyType : int {
     COMPACTION_JOB_ID = 0,
     COMPACTION_INPUT_OUTPUT_LEVEL,
@@ -83,11 +83,15 @@ struct ThreadStatus {
 
   enum FlushPropertyType : int {
     FLUSH_JOB_ID = 0,
-    FLUSH_BYTES_READ,
-    FLUSH_BYTES_REMAIN,
+    FLUSH_BYTES_MEMTABLES,
     FLUSH_BYTES_WRITTEN,
     NUM_FLUSH_PROPERTIES
   };
+
+  // The maximum number of properties of an operation.
+  // This number should be set to the biggest NUM_XXX_PROPERTIES.
+  static const int kNumOperationProperties =
+      constexpr_max(NUM_COMPACTION_PROPERTIES, NUM_FLUSH_PROPERTIES);
 
   // The type used to refer to a thread state.
   // A state describes lower-level action of a thread
@@ -177,7 +181,7 @@ struct ThreadStatus {
   // a property value.
   static std::map<std::string, uint64_t>
       InterpretOperationProperties(
-          OperationType op_type, uint64_t* op_properties);
+          OperationType op_type, const uint64_t* op_properties);
 
   // Obtain the name of a state given its type.
   static const std::string& GetStateName(StateType state_type);

@@ -42,6 +42,7 @@ int main() {
 #include "rocksdb/write_batch.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/filter_policy.h"
+#include "rocksdb/rate_limiter.h"
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/perf_context.h"
 #include "rocksdb/utilities/flashcache.h"
@@ -509,6 +510,8 @@ DEFINE_int32(rate_limit_delay_max_milliseconds, 1000,
              "When hard_rate_limit is set then this is the max time a put will"
              " be stalled.");
 
+DEFINE_uint64(rate_limiter_bytes_per_sec, 0, "Set options.rate_limiter value.");
+
 DEFINE_int32(max_grandparent_overlap_factor, 10, "Control maximum bytes of "
              "overlaps in grandparent (i.e., level+2) before we stop building a"
              " single file in a level->level+1 compaction.");
@@ -555,9 +558,15 @@ DEFINE_bool(use_adaptive_mutex, rocksdb::Options().use_adaptive_mutex,
             "Use adaptive mutex");
 
 DEFINE_uint64(bytes_per_sync,  rocksdb::Options().bytes_per_sync,
-              "Allows OS to incrementally sync files to disk while they are"
+              "Allows OS to incrementally sync SST files to disk while they are"
               " being written, in the background. Issue one request for every"
               " bytes_per_sync written. 0 turns it off.");
+
+DEFINE_uint64(wal_bytes_per_sync,  rocksdb::Options().wal_bytes_per_sync,
+              "Allows OS to incrementally sync WAL files to disk while they are"
+              " being written, in the background. Issue one request for every"
+              " wal_bytes_per_sync written. 0 turns it off.");
+
 DEFINE_bool(filter_deletes, false, " On true, deletes use bloom-filter and drop"
             " the delete if key not present");
 
@@ -2221,6 +2230,7 @@ class Benchmark {
     options.access_hint_on_compaction_start = FLAGS_compaction_fadvice_e;
     options.use_adaptive_mutex = FLAGS_use_adaptive_mutex;
     options.bytes_per_sync = FLAGS_bytes_per_sync;
+    options.wal_bytes_per_sync = FLAGS_wal_bytes_per_sync;
 
     // merge operator options
     options.merge_operator = MergeOperators::CreateFromStringId(
@@ -2255,6 +2265,10 @@ class Benchmark {
     }
     if (FLAGS_thread_status_per_interval > 0) {
       options.enable_thread_tracking = true;
+    }
+    if (FLAGS_rate_limiter_bytes_per_sec > 0) {
+      options.rate_limiter.reset(
+          NewGenericRateLimiter(FLAGS_rate_limiter_bytes_per_sec));
     }
 
     if (FLAGS_num_multi_db <= 1) {
